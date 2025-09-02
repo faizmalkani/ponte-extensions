@@ -1,0 +1,32 @@
+{
+    "manifest_version": 3,
+    "name": "Vostra - the Instruction Layer for Teams using AI",
+    "version": "1.0",
+    "description": "Adds Vostra to ChatGPT",
+    "permissions": [
+        "storage"
+    ],
+    "background": {
+        "service_worker": "dist/background/background.js",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://chat.openai.com/*",
+                "https://chatgpt.com/*"
+            ],
+            "js": [
+                "dist/content/content.iife.js"
+            ],
+            "type": "module"
+        }
+    ],
+    "externally_connectable": {
+
+        "matches": [
+            "https://app.getvostra.com/*",
+            "http://localhost:3000/*"
+        ]
+    }
+}

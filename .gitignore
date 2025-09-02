@@ -1,0 +1,30 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/chrome/node_modules
+/chrome/.pnp
+/chrome/.pnp.*
+/chrome/.yarn/*
+/chrome/!.yarn/patches
+/chrome/!.yarn/plugins
+/chrome/!.yarn/releases
+/chrome/!.yarn/versions
+
+# testing
+/chrome/coverage
+
+# production
+/chrome/dist
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+/chrome/npm-debug.log*
+/chrome/yarn-debug.log*
+/chrome/yarn-error.log*
+/chrome/.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+/chrome/.env*
