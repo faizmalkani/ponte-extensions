@@ -14,33 +14,34 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
-chrome.runtime.onMessageExternal.addListener(async (message, sender, sendResponse) =>
-{
-    if (message.type === "ID_TOKEN")
-    {
-        const refreshToken = message.extensionToken;
-        try
-        {
-            console.log('Id token received', refreshToken)
+const FRONTEND_URL = import.meta.env.VITE_ENVIRONMENT === "dev" ? "http://localhost:3000" : "https://app.getvostra.com";
+const API_BASE_URL = import.meta.env.VITE_ENVIRONMENT === "dev" ? "http://localhost:3010" : "https://ponte-ai.uc.r.appspot.com/"
 
-            const userCredential = await signInWithCustomToken(auth, refreshToken);
-            console.log("Extension signed in as:", userCredential.user.uid);
-
-            // Optionally store token in chrome.storage
-            chrome.storage.local.set({ uid: userCredential.user.uid });
-
-            sendResponse({ success: true });
-        }
-        catch (err)
-        {
-            console.error("Sign-in failed in extension:", err);
-            sendResponse({ success: false, error: err.message });
-        }
-    }
-});
+// =================================================================================================
+// Content Messages
+// =================================================================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) =>
 {
+    if (message.type === "GET_AUTH_STATE")
+    {
+        (async function ()
+        {
+            try
+            {
+                const user = await ensureAuthenticated();
+                if (!user) throw new Error("Not signed in");
+
+                sendResponse({ success: true, uid: user.uid });
+            }
+            catch (err)
+            {
+                sendResponse({ success: false, error: err.message });
+            }
+        })();
+
+        return true; // keep channel open
+    }
 
     if (message.type === "GET_TEAMS")
     {
@@ -48,13 +49,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) =>
         {
             try
             {
-                const user = auth.currentUser;
+                const user = await ensureAuthenticated();
                 if (!user) throw new Error("Not signed in");
 
                 const token = await user.getIdToken(true);
-                console.log(token)
-
                 const teams = await api.fetchTeams(token)
+
                 sendResponse({ success: true, teams });
             }
             catch (err)
@@ -72,12 +72,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) =>
         {
             try
             {
-                const user = auth.currentUser;
+                const user = await ensureAuthenticated();
                 if (!user) throw new Error("Not signed in");
 
                 const token = await user.getIdToken(true);
-
                 const teamsWithInstructionSets = await api.fetchTeamsWithInstructionSets(token);
+
                 sendResponse({ success: true, teamsWithInstructionSets });
             }
             catch (err)
@@ -90,6 +90,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) =>
     }
 
 });
+
+// =================================================================================================
+// API
+// =================================================================================================
 
 export const api =
 {
@@ -106,9 +110,10 @@ export const api =
 
 async function apiFetch(endpoint, options)
 {
-    const API_BASE_URL = "http://localhost:3010"
-
     const { token, headers, ...rest } = options;
+
+    console.log("Token is", token)
+
     const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     const config = {
         headers: {
@@ -118,7 +123,7 @@ async function apiFetch(endpoint, options)
         },
         ...rest,
     };
-    
+
     const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
     if (!response.ok)
     {
@@ -126,7 +131,6 @@ async function apiFetch(endpoint, options)
         try
         {
             errorData = await response.json();
-            console.log("Error", errorData)
         }
         catch (jsonError)
         {
@@ -147,21 +151,68 @@ async function apiFetch(endpoint, options)
     return responseJson;
 }
 
+// =================================================================================================
+// Auth
+// =================================================================================================
+
+// Gets the token from the cookie that the frontend set
+async function getExtensionTokenCookie()
+{
+    return new Promise((resolve) =>
+    {
+        chrome.cookies.get(
+            {
+                url: FRONTEND_URL, // must match your frontend
+                name: "vostraExtensionToken",
+            },
+            (cookie) =>
+            {
+                resolve(cookie ? cookie.value : null);
+            }
+        );
+    });
+}
+
+// Signs in the user
+async function ensureAuthenticated()
+{
+    if (auth.currentUser) return auth.currentUser;
+    const extensionToken = await getExtensionTokenCookie();
+
+    if (!extensionToken)
+    {
+        console.warn("No extension cookie found, user likely not logged in via frontend");
+        return null;
+    }
+
+    try
+    {
+        const userCredential = await signInWithCustomToken(auth, extensionToken);
+        console.log("Signed in with cookie:", userCredential.user.uid);
+        return userCredential.user;
+    }
+    catch (err)
+    {
+        console.error("Sign-in failed with cookie:", err);
+        chrome.cookies.remove({
+            url: FRONTEND_URL.startsWith("http") ? FRONTEND_URL : `https://${FRONTEND_URL}`,
+            name: "vostraExtensionToken",
+        });
+        return null;
+    }
+}
+
 // Keep track of session
 onAuthStateChanged(auth, (user) =>
 {
     if (user)
     {
         console.log("Extension is authenticated:", user.uid);
+        chrome.storage.local.set({ authStatus: { loggedIn: true, uid: user.uid } });
     }
     else
     {
         console.log("Extension signed out");
+        chrome.storage.local.set({ authStatus: { loggedIn: false } });
     }
-});
-
-// Example: make sure extension can respond
-chrome.runtime.onInstalled.addListener(() =>
-{
-    console.log("Background service worker installed");
 });
