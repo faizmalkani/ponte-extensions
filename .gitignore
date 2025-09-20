@@ -15,6 +15,9 @@
 
 # production
 /chrome/dist
+/chrome/chrome-extension-build
+/chrome/chrome-extension-build/*
+/chrome/vostra-extension.zip
 
 # misc
 .DS_Store

@@ -15,7 +15,9 @@
         "cookies"
     ],
     "host_permissions": [
-        "http://localhost:3000/*"
+        "http://localhost/*",
+        "http://localhost:3000/*",
+        "https://app.getvostra.com/*"
     ],
     "background": {
         "service_worker": "dist/background/background.js",

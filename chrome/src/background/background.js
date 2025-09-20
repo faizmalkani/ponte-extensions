@@ -1,6 +1,9 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, onAuthStateChanged } from "firebase/auth";
 
+const FRONTEND_URL = import.meta.env.VITE_ENVIRONMENT === "dev" ? "http://localhost:3000" : "https://app.getvostra.com";
+const API_BASE_URL = import.meta.env.VITE_ENVIRONMENT === "dev" ? "http://localhost:3010" : "https://ponte-ai.uc.r.appspot.com/"
+
 const firebaseConfig = {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
     authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -14,8 +17,36 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
-const FRONTEND_URL = import.meta.env.VITE_ENVIRONMENT === "dev" ? "http://localhost:3000" : "https://app.getvostra.com";
-const API_BASE_URL = import.meta.env.VITE_ENVIRONMENT === "dev" ? "http://localhost:3010" : "https://ponte-ai.uc.r.appspot.com/"
+let lastToken = null;
+let signingIn = false;
+
+
+// ======================================================================
+// AUTO SIGN-IN WHEN COOKIE CHANGES
+// ======================================================================
+
+chrome.cookies.onChanged.addListener(async ({ cookie, removed }) =>
+{
+    if (cookie.name !== "vostraExtensionToken") return;
+
+    if (!removed)
+    {
+        if (cookie.value === lastToken || signingIn)
+        {
+            console.log("Same token or already signing in, ignoring...");
+            return;
+        }
+
+        console.log("New token detected, signing in via ensureAuthenticated...");
+        lastToken = cookie.value;
+        await ensureAuthenticated();
+    }
+    else
+    {
+        console.log("Token cookie removed — Firebase will sign out naturally");
+    }
+});
+
 
 // =================================================================================================
 // Content Messages
@@ -112,8 +143,6 @@ async function apiFetch(endpoint, options)
 {
     const { token, headers, ...rest } = options;
 
-    console.log("Token is", token)
-
     const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
     const config = {
         headers: {
@@ -155,20 +184,12 @@ async function apiFetch(endpoint, options)
 // Auth
 // =================================================================================================
 
-// Gets the token from the cookie that the frontend set
 async function getExtensionTokenCookie()
 {
     return new Promise((resolve) =>
     {
-        chrome.cookies.get(
-            {
-                url: FRONTEND_URL, // must match your frontend
-                name: "vostraExtensionToken",
-            },
-            (cookie) =>
-            {
-                resolve(cookie ? cookie.value : null);
-            }
+        chrome.cookies.get({ url: FRONTEND_URL, name: "vostraExtensionToken", },
+            (cookie) => { resolve(cookie ? cookie.value : null); }
         );
     });
 }
@@ -185,6 +206,23 @@ async function ensureAuthenticated()
         return null;
     }
 
+    if (signingIn)
+    {
+        // wait until current sign-in finishes
+        return new Promise((resolve) =>
+        {
+            const unsub = onAuthStateChanged(auth, (user) =>
+            {
+                if (user)
+                {
+                    unsub();
+                    resolve(user);
+                }
+            });
+        });
+    }
+
+    signingIn = true;
     try
     {
         const userCredential = await signInWithCustomToken(auth, extensionToken);
@@ -200,6 +238,10 @@ async function ensureAuthenticated()
         });
         return null;
     }
+    finally
+    {
+        signingIn = false;
+    }
 }
 
 // Keep track of session
@@ -214,5 +256,29 @@ onAuthStateChanged(auth, (user) =>
     {
         console.log("Extension signed out");
         chrome.storage.local.set({ authStatus: { loggedIn: false } });
+    }
+});
+
+// ======================================================================
+// EXTENSION LIFECYCLE
+// ======================================================================
+
+chrome.runtime.onStartup.addListener(async () =>
+{
+    console.log("Extension starting, checking for cookie...");
+    const extensionToken = await getExtensionTokenCookie();
+    if (extensionToken)
+    {
+        await ensureAuthenticated();
+    }
+});
+
+chrome.runtime.onInstalled.addListener(async () =>
+{
+    console.log("Extension installed, checking for cookie...");
+    const extensionToken = await getExtensionTokenCookie();
+    if (extensionToken)
+    {
+        await ensureAuthenticated();
     }
 });
