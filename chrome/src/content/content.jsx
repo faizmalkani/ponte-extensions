@@ -2,69 +2,206 @@ import { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 
 import { siteConfigs } from "./siteConfigs";
+
+// Helper to check if the extension context is valid
+const isExtensionValid = () =>
+{
+    try
+    {
+        return chrome.runtime && !!chrome.runtime.id;
+    } catch (e)
+    {
+        return false;
+    }
+};
 import { PuffLoader } from "react-spinners";
 import { Menu, MenuButton, MenuItems, MenuItem } from '@headlessui/react';
 
 const host = window.location.hostname;
 const config = siteConfigs[host];
 
-const FRONTEND_URL = import.meta.env.VITE_ENVIRONMENT === "dev" ? "http://localhost:3000" : "https://app.getvostra.com";
+const IS_DEV = "false"
+const FRONTEND_URL = IS_DEV ? "http://localhost:3000" : "https://app.getvostra.com";
+
+let globalPromptsCache = null;
 
 function VostraButton({ config })
 {
     const hasFetched = useRef(false);
-    const [selectedInstructionSet, setSelectedInstructionSet] = useState(null);
-    const [teamsWithInstructionSets, setTeamsWithInstructionSets] = useState([]);
-    const [isLoadingInstructionSets, setIsLoadingInstructionSets] = useState(true);
-    const [errorAuthenticatingUser, setErrorAuthenticatingUser] = useState(null);
-    const [errorLoadingInstructionSets, setErrorLoadingInstructionSets] = useState(null);
+    const [selectedPrompt, setSelectedPrompt] = useState(null);
+    const [teamsWithPrompts, setTeamsWithPrompts] = useState([]);
+    const [searchTerm, setSearchTerm] = useState("");
 
-    const fetchInstructionSets = () =>
+    const filteredTeams = teamsWithPrompts.map(team => ({
+        ...team,
+        prompts: team.prompts.filter(p =>
+            p.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (p.description && p.description.toLowerCase().includes(searchTerm.toLowerCase()))
+        )
+    })).filter(team => team.prompts.length > 0);
+
+    const [status, setStatus] = useState({
+        isLoading: true,
+        error: null,
+        needsAuth: false,
+    });
+
+    // Listen for AUTH_ERROR messages from background.js
+    useEffect(() =>
     {
-        // Step 1: Check if auth ready
-        chrome.runtime.sendMessage({ type: "GET_AUTH_STATE" }, (authResponse) =>
+        if (!isExtensionValid()) return;
+
+        const listener = (msg) =>
         {
-            if (!authResponse?.success)
+            if (msg.type === "AUTH_ERROR")
             {
-                setIsLoadingInstructionSets(false);
-                setErrorAuthenticatingUser("Please sign in to Vostra")
-
-                return;
+                console.warn("Auth error from background:", msg.error);
+                setStatus({
+                    isLoading: false,
+                    error: null,
+                    needsAuth: true,
+                });
+                setTeamsWithPrompts([]);
             }
+        };
 
-            setIsLoadingInstructionSets(true);
+        try
+        {
+            chrome.runtime.onMessage.addListener(listener);
+        } catch (e)
+        {
+            console.warn("Vostra: Could not add message listener", e);
+        }
 
-            // Step 2a: Try local cache first
-            chrome.storage.local.get("teamsWithInstructionSets", (result) =>
+        return () =>
+        {
+            try
             {
-                if (result.teamsWithInstructionSets)
+                if (isExtensionValid())
                 {
-                    setTeamsWithInstructionSets(result.teamsWithInstructionSets);
-                    setErrorLoadingInstructionSets(null);
-                    setIsLoadingInstructionSets(false); // immediate render, no flicker
+                    chrome.runtime.onMessage.removeListener(listener);
                 }
-            });
-
-            // Step 2: Now safe to fetch instruction sets
-            chrome.runtime.sendMessage({ type: "GET_INSTRUCTION_SETS" }, (response) =>
+            } catch (e)
             {
-                if (response?.success)
-                {
-                    setTeamsWithInstructionSets(response.teamsWithInstructionSets);
-                    setErrorLoadingInstructionSets(null);
+                // Ignore cleanup errors
+            }
+        };
+    }, []);
 
-                    chrome.storage.local.set({
-                        teamsWithInstructionSets: response.teamsWithInstructionSets,
+    const fetchInstructionSets = (force = false) =>
+    {
+        if (!isExtensionValid())
+        {
+            console.warn("Vostra: Extension context invalidated, skipping fetch.");
+            return;
+        }
+
+        // 1. Check in-memory cache first (if not forcing)
+        console.log(`Vostra: Fetch calls. Force: ${force}, Cache exits: ${!!globalPromptsCache}`);
+        if (!force && globalPromptsCache)
+        {
+            console.log("Vostra: Using in-memory cache");
+            setTeamsWithPrompts(globalPromptsCache);
+            setStatus(prev => ({ ...prev, isLoading: false, error: null }));
+            return;
+        }
+
+        setStatus(prevStatus => ({
+            ...prevStatus,
+            isLoading: true,
+            error: null,
+            needsAuth: false, // Assume authenticated until proven otherwise
+        }));
+
+        setTeamsWithPrompts([]);
+
+        try
+        {
+            // Step 1: Check if auth ready
+            chrome.runtime.sendMessage({ type: "GET_AUTH_STATE" }, (authResponse) =>
+            {
+                if (chrome.runtime.lastError)
+                {
+                    console.warn("Vostra: Runtime error checking auth state", chrome.runtime.lastError);
+                    return;
+                }
+
+                if (!authResponse?.success)
+                {
+                    setStatus({
+                        isLoading: false,
+                        error: null, // No generic error, but needs auth
+                        needsAuth: true, // Specific state for sign-in required
                     });
-                }
-                else
-                {
-                    setErrorLoadingInstructionSets("Failed to load instruction sets")
+
+                    return;
                 }
 
-                setIsLoadingInstructionSets(false);
+                // Helper to perform the actual network fetch
+                const fetchFromNetwork = () =>
+                {
+                    try
+                    {
+                        chrome.runtime.sendMessage({ type: "GET_PROMPTS" }, (response) =>
+                        {
+                            if (chrome.runtime.lastError)
+                            {
+                                console.warn("Vostra: Runtime error fetching prompts", chrome.runtime.lastError);
+                                setStatus(prevStatus => ({
+                                    ...prevStatus,
+                                    isLoading: false,
+                                    error: "Extension disconnected"
+                                }));
+                                return;
+                            }
+
+                            if (response?.success)
+                            {
+                                console.log("Vostra: Loaded from Network");
+                                setTeamsWithPrompts(response.teamsWithPrompts);
+                                globalPromptsCache = response.teamsWithPrompts;
+                                setStatus(prevStatus => ({ ...prevStatus, isLoading: false, error: null }));
+
+                                console.log("Vostra: Saving to Local Storage");
+                                chrome.storage.local.set({
+                                    teamsWithPrompts: response.teamsWithPrompts,
+                                });
+                            }
+                            else
+                            {
+                                const errorMessage = `Failed to load prompts: ${response?.message || 'Unknown error'}.`;
+
+                                setStatus(prevStatus => ({
+                                    ...prevStatus,
+                                    isLoading: false,
+                                    error: errorMessage
+                                }));
+
+                                console.error("Vostra: Failed to load prompts", JSON.stringify(response));
+                            }
+                        });
+                    } catch (e)
+                    {
+                        console.warn("Vostra: sendMessage failed", e);
+                    }
+                };
+
+                // Step 2: Decide whether to load from cache or network
+                // For Strategy C: "When whole page loads, fetch from network"
+                // Since page load means globalPromptsCache is null, we just fall through to network.
+                // We only use cache if it's in memory (SPA Switch).
+
+                fetchFromNetwork();
             });
-        });
+        } catch (e)
+        {
+            console.warn("Vostra: Failed to start auth check", e);
+            setStatus(prevStatus => ({
+                ...prevStatus,
+                isLoading: false,
+                error: "Extension context invalidated"
+            }));
+        }
     }
 
     useEffect(() =>
@@ -73,7 +210,7 @@ function VostraButton({ config })
         if (!hasFetched.current)
         {
             hasFetched.current = true;
-            fetchInstructionSets(isMounted);
+            fetchInstructionSets(false);
         }
 
         return () => { isMounted = false; };
@@ -83,6 +220,8 @@ function VostraButton({ config })
     // Listen for auth state changes from background.js
     useEffect(() =>
     {
+        if (!isExtensionValid()) return;
+
         const handleAuthChange = (changes, areaName) =>
         {
             if (areaName === "local" && changes.authStatus)
@@ -91,36 +230,59 @@ function VostraButton({ config })
 
                 if (!newStatus.loggedIn)
                 {
-                    setErrorAuthenticatingUser("Please sign in to Vostra");
+                    setStatus({
+                        isLoading: false,
+                        error: null,
+                        needsAuth: true,
+                    });
+                    setTeamsWithPrompts([]);
                 }
                 else
                 {
-                    setErrorAuthenticatingUser(null);
                     fetchInstructionSets();
                 }
             }
         };
 
-        chrome.storage.onChanged.addListener(handleAuthChange);
+        try
+        {
+            chrome.storage.onChanged.addListener(handleAuthChange);
+        } catch (e)
+        {
+            console.warn("Vostra: Failed to add storage listener", e);
+        }
 
         return () =>
         {
-            chrome.storage.onChanged.removeListener(handleAuthChange);
+            try
+            {
+                if (isExtensionValid())
+                {
+                    chrome.storage.onChanged.removeListener(handleAuthChange);
+                }
+            } catch (e) { }
         };
 
     }, []);
 
-    const instructionSetClicked = (teamIndex, instructionSetIndex) =>
+    const promptClicked = (prompt) =>
     {
-        const instructionSet = teamsWithInstructionSets[teamIndex].contexts[instructionSetIndex]
-        setSelectedInstructionSet(instructionSet)
+        setSelectedPrompt(prompt)
 
-        const textDiv = document.querySelector('#prompt-textarea.ProseMirror');
+        let textDiv;
+        if (config.llm === "gemini")
+        {
+            textDiv = document.querySelector('div[role="textbox"].ql-editor');
+        }
+        if (config.llm === "chatgpt")
+        {
+            textDiv = document.querySelector('#prompt-textarea.ProseMirror');
+        }
 
         if (textDiv)
         {
             textDiv.focus();
-            textDiv.textContent = instructionSet.content;
+            textDiv.textContent = prompt.content;
 
             // Manually trigger an 'input' event to activate the button
             const inputEvent = new Event('input', { bubbles: true });
@@ -128,7 +290,16 @@ function VostraButton({ config })
 
             const interval = setInterval(() =>
             {
-                const submitButton = document.getElementById('composer-submit-button');
+                let submitButton;
+                if (config.llm === "gemini")
+                {
+                    submitButton = document.querySelector('button.send-button.submit');
+                }
+                if (config.llm === "chatgpt")
+                {
+                    submitButton = document.getElementById('composer-submit-button');
+                }
+
                 if (submitButton)
                 {
                     submitButton.click();
@@ -137,7 +308,6 @@ function VostraButton({ config })
             }, 50);
         }
     }
-
 
     return (
 
@@ -148,7 +318,7 @@ function VostraButton({ config })
                 ref={(el) => config.applyRef && config.applyRef(el)}
                 className={config.buttonClass}
                 style={config.style}
-                disabled={isLoadingInstructionSets} >
+                disabled={status.isLoading} >
 
                 {config.llm === "gemini" && <span className="mat-mdc-button-persistent-ripple mdc-button__ripple"></span>}
 
@@ -159,15 +329,13 @@ function VostraButton({ config })
                     </g>
                 </svg>
 
-
-                <span className={config.textWrapperClass}>
-                    {errorAuthenticatingUser ? "Sign in to Vostra"
-                        :
-                        isLoadingInstructionSets ? "Loading Vostra"
-                            :
-                            selectedInstructionSet ? selectedInstructionSet.title
-                                :
-                                "Select an instruction set from Vostra"
+                <span className={config.textWrapperClass} style={config.textWrapperStyle}>
+                    {
+                        status.needsAuth ? "Sign in to Vostra"
+                            : status.isLoading ? "Loading Vostra"
+                                : status.error ? "Error loading Vostra, click to retry"
+                                    : selectedPrompt ? selectedPrompt.title
+                                        : "Select a prompt from Vostra"
                     }
                 </span>
 
@@ -186,11 +354,50 @@ function VostraButton({ config })
 
                 <div className={config.menuContentClass} style={config.menuContentStyle}>
 
-                    {errorAuthenticatingUser &&
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }} >
+
+                        <div style={{ display: 'flex', flexDirection: 'row', gap: '4px', justifyContent: 'space-between', alignItems: 'center', margin: '8px 16px' }}>
+
+                            <a href={FRONTEND_URL + "/teams"} target='_blank' >
+                                <div>
+                                    <svg width="32px" height="32px" viewBox="0 0 160 111" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M126.384 102.715C115.376 113.442 98.0885 113.766 86.6954 103.61L100.141 89.8268C104.169 92.7074 109.779 92.3027 113.357 88.635L137.988 63.3854C141.968 59.3052 141.924 52.733 137.89 48.7059L112.927 23.7845C108.893 19.7575 102.396 19.8005 98.4159 23.8806L73.7856 49.1302C70.4941 52.5044 69.9553 57.5826 72.1486 61.5166L58.583 75.4233C49.1594 64.0281 49.5043 47.1313 59.6962 36.1397L60.2209 35.5884L84.8512 10.3388C96.2229 -1.31872 114.785 -1.44158 126.31 10.0644L151.274 34.9857C162.799 46.4917 162.924 65.2696 151.552 76.9271L126.922 102.177L126.384 102.715Z" fill={`${config.llm === "gemini" ? "#727676" : "#d8d8d2ff"}`} />
+                                        <path d="M33.6161 8.28507C44.578 -2.39724 61.7682 -2.76259 73.1625 7.26403L59.702 21.063C55.6863 18.3036 50.1742 18.7447 46.6428 22.3649L22.0125 47.6145C18.0324 51.6947 18.0761 58.2669 22.11 62.294L47.0735 87.2154C51.1074 91.2424 57.604 91.1994 61.5841 87.1194L86.2144 61.8698C89.5538 58.4464 90.0596 53.2693 87.7536 49.3124L101.295 35.431C110.843 46.8274 110.539 63.8215 100.304 74.8602L99.7791 75.4115L75.1488 100.661C63.7771 112.319 45.2153 112.441 33.6898 100.936L8.72633 76.0142C-2.79913 64.5082 -2.9238 45.7303 8.4478 34.0728L33.0781 8.82317L33.6161 8.28507Z" fill={`${config.llm === "gemini" ? "#727676" : "#d8d8d2ff"}`} />
+                                    </svg>
+                                </div>
+                            </a>
+
+                            <a onClick={(e) => { e.preventDefault(); fetchInstructionSets(true); }} title="Sync library" className={config.menuItemClass} style={{ padding: '0px', cursor: 'pointer', width: 'fit-content' }}>
+                                <span className={config.menuItemContentClass} style={{ padding: '0px !important', lineHeight: '0' }}>
+                                    {config.menuIcons.reload()}
+                                </span>
+                            </a>
+
+                        </div>
+
+                        {!status.needsAuth && !status.isLoading && !status.error && (
+                            <div style={config.llm === "gemini" ? { padding: '8px 12px', display: 'flex', marginBottom: '4px', borderRadius: '8px', justifyContent: 'stretch' } : { padding: '8px 16px', display: 'flex', marginBottom: '4px', justifyContent: 'stretch' }}>
+                                <input
+                                    type="text"
+                                    placeholder="Search prompts..."
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onKeyDown={(e) => e.stopPropagation()}
+                                    className={config.menuItemClass}
+                                    style={config.searchItemStyle}
+                                />
+                            </div>
+                        )}
+                    </div>
+
+
+                    {status.needsAuth &&
 
                         <MenuItem>
                             <div className={config.menuTitleClass} style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
-                                <span>Vostra brings reusable instruction sets right to {config.llm == "chatgpt" ? "ChatGPT" : "Gemini"} </span>
+                                <span>Vostra brings reusable prompts right to {config.llm == "chatgpt" ? "ChatGPT" : "Gemini"} </span>
                                 <a style={{ marginTop: '8px', color: '#065f46', cursor: 'pointer', fontWeight: '700' }} href={`${FRONTEND_URL}/login`} target='_blank'>
                                     Sign in
                                 </a>
@@ -199,7 +406,7 @@ function VostraButton({ config })
 
                     }
 
-                    {!errorAuthenticatingUser && isLoadingInstructionSets && (
+                    {!status.needsAuth && status.isLoading && (
 
                         <MenuItem>
                             <div style={{ display: 'flex', justifyContent: 'center', padding: '24px' }}>
@@ -212,80 +419,99 @@ function VostraButton({ config })
 
                     )}
 
-                    {!errorAuthenticatingUser && errorLoadingInstructionSets && (
+                    {!status.needsAuth && status.error && (
+
                         <MenuItem>
                             <div className={config.menuTitleClass} style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
-                                <span>{errorLoadingInstructionSets}</span>
+                                <span>{status.error}</span>
                                 <span
                                     style={{ marginTop: '8px', color: '#065f46', cursor: 'pointer', fontWeight: '700' }}
-                                    onClick={() =>
-                                    {
-                                        setIsLoadingInstructionSets(true);
-                                        setErrorLoadingInstructionSets(null);
-                                        fetchInstructionSets();
-                                    }}>
+                                    onClick={() => fetchInstructionSets(true)}>
                                     Retry
                                 </span>
                             </div>
                         </MenuItem>
                     )}
 
-                    {!errorAuthenticatingUser && !isLoadingInstructionSets && !errorLoadingInstructionSets && teamsWithInstructionSets.length === 0 && (
+                    {!status.needsAuth && !status.isLoading && !status.error && teamsWithPrompts.length === 0 && (
+
                         <MenuItem>
                             <div className={config.menuTitleClass} style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
-                                <span>No instruction sets available</span>
-                                <span
+                                <span>No prompts available</span>
+                                <a
                                     style={{ marginTop: '8px', color: '#065f46', cursor: 'pointer', fontWeight: '700' }}
-                                    onClick={() =>
-                                    {
-                                        setIsLoadingInstructionSets(true);
-                                        setErrorLoadingInstructionSets(null);
-                                        fetchInstructionSets();
-                                    }}>
+                                    href="https://app.getvostra.com" target='_blank'>
                                     Create one in Vostra
-                                </span>
+                                </a>
                             </div>
                         </MenuItem>
                     )}
 
-                    {!errorAuthenticatingUser && !isLoadingInstructionSets && !errorLoadingInstructionSets && teamsWithInstructionSets.length > 0 && (
+                    {!status.needsAuth && !status.isLoading && !status.error && teamsWithPrompts.length > 0 && (
 
                         <>
-                            {teamsWithInstructionSets.map((team, teamIndex) => (
+                            {filteredTeams.length === 0 && searchTerm && (
+                                <MenuItem>
+                                    <div className={config.menuTitleClass} style={{ padding: '16px', opacity: 0.7 }}>
+                                        No results for "{searchTerm}"
+                                    </div>
+                                </MenuItem>
+                            )}
+
+                            {filteredTeams.map((team, teamIndex) => (
 
                                 <>
-                                    <span className={config.menuTitleClass} style={config.menuTitleStyle}>
-                                        {team.name}
-                                    </span>
+                                    <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
+                                        <span className={config.menuTitleClass} style={config.menuTitleStyle}>
+                                            {team.name}
+                                        </span>
+                                        <span style={config.sharedTeamIndicatorStyle}>
+                                            {team.isOwner ? '' : config.menuIcons.shared()}
+                                        </span>
+                                    </div>
 
-                                    {team.contexts.map((instructionSet, instructionSetIndex) => (
+                                    {team.prompts.length === 0 && (
+                                        <MenuItem>
+                                            <div className={config.menuItemClass} style={{ pointerEvents: 'none' }}>
+                                                <span className={config.menuItemEmptyClass}>
+                                                    No prompts in this team
+                                                </span>
+                                            </div>
+                                        </MenuItem>
+                                    )}
 
-                                        <MenuItem key={instructionSet.id}>
-                                            <a onClick={() => instructionSetClicked(teamIndex, instructionSetIndex)} className={config.menuItemClass} style={config.menuItemStyle}>
+                                    {team.prompts.map((prompt, promptIndex) => (
+
+                                        <MenuItem key={prompt.id}>
+                                            <a onClick={() => promptClicked(prompt)} className={config.menuItemClass} style={config.menuItemStyle}>
                                                 <span className={config.menuItemContentClass}>
-                                                    {instructionSet.title}
+                                                    {prompt.title}
                                                 </span>
                                             </a>
                                         </MenuItem>
                                     ))}
 
+                                    {config.llm === "chatgpt" && (
+                                        <div role="separator" aria-orientation="horizontal" class="bg-token-border-default h-px mx-4 my-1"></div>
+                                    )}
+
+
+                                    {config.llm === "gemini" && (
+                                        <hr className='mat-divider share-divider mat-divider-horizontal' />
+                                    )}
+
                                 </>
                             ))}
 
-                            {config.llm === "chatgpt" && (
-                                <div className="mx-4 my-1 bg-token-border-default h-px"></div>
-                            )}
 
-                            {config.llm === "gemini" && (
-                                <hr className='mat-divider share-divider mat-divider-horizontal' />
-                            )}
+
 
 
                             <MenuItem>
-                                <a href="https://app.getvostra.com" target='_blank' className={config.menuItemClass} data-has-submenu>
-                                    {config.menuIcons.instructionSets()}
+                                <a href={FRONTEND_URL} target='_blank' className={config.menuItemClass} data-has-submenu>
+                                    {config.menuIcons.prompts()}
                                     <span className={config.menuItemContentClass}>
-                                        Manage instruction sets
+                                        Manage prompts
                                     </span>
 
                                     {config.llm === "chatgpt" && (
@@ -295,9 +521,9 @@ function VostraButton({ config })
                                 </a>
                             </MenuItem>
 
-                            <MenuItem>
-                                <a href="https://app.getvostra.com/teams" target='_blank' className={config.menuItemClass} data-has-submenu>
-                                    {config.menuIcons.manageTeams()}
+                            {/* <MenuItem>
+                                <a href={FRONTEND_URL + "/teams"} target='_blank' className={config.menuItemClass} data-has-submenu>
+                                    config.menuIcons.manageTeams()
                                     <span className={config.menuItemContentClass}>
                                         Manage teams
                                     </span>
@@ -307,7 +533,7 @@ function VostraButton({ config })
                                     )}
 
                                 </a>
-                            </MenuItem>
+                            </MenuItem> */}
 
                         </>
                     )}
@@ -326,8 +552,6 @@ function VostraButton({ config })
 function mountReactComponent(config)
 {
     const targetElement = document.querySelector(config.targetSelector);
-
-    console.log(targetElement)
 
     // Checks if there's no target or it already exists in the target
     if (!targetElement) return;
@@ -361,6 +585,13 @@ if (config)
 {
     const observer = new MutationObserver(() =>
     {
+        if (!isExtensionValid())
+        {
+            // Extension context invalidated, stop observing
+            try { observer.disconnect(); } catch (e) { }
+            return;
+        }
+
         const target = document.querySelector(config.targetSelector);
 
         if (!target) return; // No mount point yet
@@ -372,10 +603,16 @@ if (config)
         }
     });
 
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-    });
+    try
+    {
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+        });
+    } catch (e)
+    {
+        console.warn("Vostra: Failed to start observer", e);
+    }
 }
 else    
 {

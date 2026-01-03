@@ -12,8 +12,8 @@
         "zip-extension": "node scripts/zip.js",
         "package": "npm run clean-package && npm run copy-files && npm run update-manifest && npm run zip-extension",
         "build:prod": "npm run build:all && npm run package",
-        "dev:content": "vite build --config vite.config.content.js --watch",
-        "dev:background": "vite build --config vite.config.background.js --watch",
+        "dev:content": "vite build --config vite.config.content.js --watch --mode development",
+        "dev:background": "vite build --config vite.config.background.js --watch --mode development",
         "dev": "npm-run-all --parallel dev:content dev:background"
     },
     "keywords": [],
