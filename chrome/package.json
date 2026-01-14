@@ -1,6 +1,7 @@
 {
-    "name": "chrome",
-    "version": "1.0.0",
+    "name": "vostra-extension-chrome",
+    "version": "1.0.5",
+    "type": "module",
     "main": "content.js",
     "scripts": {
         "build:content": "vite build --config vite.config.content.js",

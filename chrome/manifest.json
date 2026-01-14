@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
-    "name": "Vostra - Your Prompt Library",
-    "version": "1.0.1",
+    "name": "[DEV]Vostra - Your Prompt Library, inside ChatGPT and Gemini",
+    "version": "1.0.4",
     "description": "Vostra adds a native button to ChatGPT and Gemini, so you and your team can access your prompts in a single click.",
     "icons": {
         "16": "icons/vostra_icon_16.png",
@@ -18,7 +18,8 @@
         "http://localhost:3000/*",
         "https://app.getvostra.com/*",
         "https://api.getvostra.com/*",
-        "https://ponte-ai.uc.r.appspot.com/*"
+        "https://ponte-ai.uc.r.appspot.com/*",
+        "https://www.google-analytics.com/*"
     ],
     "background": {
         "service_worker": "dist/background/background.js",
@@ -28,8 +29,15 @@
         {
             "matches": [
                 "https://chat.openai.com/*",
+                "https://www.chat.openai.com/*",
                 "https://chatgpt.com/*",
-                "https://gemini.google.com/*"
+                "https://www.chatgpt.com/*",
+                "https://gemini.google.com/*",
+                "https://www.gemini.google.com/*",
+                "https://claude.ai/*",
+                "https://www.claude.ai/*",
+                "https://www.perplexity.ai/*",
+                "https://perplexity.ai/*"
             ],
             "js": [
                 "dist/content/content.iife.js"

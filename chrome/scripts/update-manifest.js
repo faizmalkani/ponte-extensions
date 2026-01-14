@@ -20,7 +20,7 @@ manifest.content_scripts = manifest.content_scripts.map(script =>
 
 // Optional: change name/version for production
 manifest.name = manifest.name.replace('[DEV]', '').trim();
-manifest.version = '1.0.1';
+manifest.version = '1.0.5';
 
 // Write updated manifest to package folder
 fs.writeFileSync(destManifest, JSON.stringify(manifest, null, 4), 'utf-8');

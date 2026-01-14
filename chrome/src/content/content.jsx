@@ -17,11 +17,35 @@ const isExtensionValid = () =>
 import { PuffLoader } from "react-spinners";
 import { Menu, MenuButton, MenuItems, MenuItem } from '@headlessui/react';
 
-const host = window.location.hostname;
-const config = siteConfigs[host];
-
-const IS_DEV = "false"
+const IS_DEV = import.meta.env.DEV;
 const FRONTEND_URL = IS_DEV ? "http://localhost:3000" : "https://app.getvostra.com";
+
+if (!IS_DEV)
+{
+    console.log = () => { };
+}
+
+const host = window.location.hostname.replace(/^www\./, "");
+const config = siteConfigs[host];
+console.log("Starting Vostra for", config.llm);
+
+
+const logEvent = (name, params = {}) =>
+{
+    if (isExtensionValid())
+    {
+        try
+        {
+            chrome.runtime.sendMessage({ type: "LOG_EVENT", name, params: { ...params, llm: config?.llm } });
+        } catch (e)
+        {
+            console.log("[Vostra Content] Failed to send LOG_EVENT message", e);
+        }
+    } else
+    {
+        console.log("[Vostra Content] Extension context invalid, cannot log event");
+    }
+};
 
 let globalPromptsCache = null;
 
@@ -55,7 +79,7 @@ function VostraButton({ config })
         {
             if (msg.type === "AUTH_ERROR")
             {
-                console.warn("Auth error from background:", msg.error);
+                console.log("Auth error from background:", msg.error);
                 setStatus({
                     isLoading: false,
                     error: null,
@@ -70,7 +94,7 @@ function VostraButton({ config })
             chrome.runtime.onMessage.addListener(listener);
         } catch (e)
         {
-            console.warn("Vostra: Could not add message listener", e);
+            console.log("Vostra: Could not add message listener", e);
         }
 
         return () =>
@@ -92,7 +116,6 @@ function VostraButton({ config })
     {
         if (!isExtensionValid())
         {
-            console.warn("Vostra: Extension context invalidated, skipping fetch.");
             return;
         }
 
@@ -122,7 +145,7 @@ function VostraButton({ config })
             {
                 if (chrome.runtime.lastError)
                 {
-                    console.warn("Vostra: Runtime error checking auth state", chrome.runtime.lastError);
+                    console.log("Vostra: Runtime error checking auth state", chrome.runtime.lastError);
                     return;
                 }
 
@@ -146,7 +169,7 @@ function VostraButton({ config })
                         {
                             if (chrome.runtime.lastError)
                             {
-                                console.warn("Vostra: Runtime error fetching prompts", chrome.runtime.lastError);
+                                console.log("Vostra: Runtime error fetching prompts", chrome.runtime.lastError);
                                 setStatus(prevStatus => ({
                                     ...prevStatus,
                                     isLoading: false,
@@ -177,12 +200,12 @@ function VostraButton({ config })
                                     error: errorMessage
                                 }));
 
-                                console.error("Vostra: Failed to load prompts", JSON.stringify(response));
+                                console.log("Vostra: Failed to load prompts", JSON.stringify(response));
                             }
                         });
                     } catch (e)
                     {
-                        console.warn("Vostra: sendMessage failed", e);
+                        console.log("Vostra: sendMessage failed", e);
                     }
                 };
 
@@ -195,7 +218,7 @@ function VostraButton({ config })
             });
         } catch (e)
         {
-            console.warn("Vostra: Failed to start auth check", e);
+            console.log("Vostra: Failed to start auth check", e);
             setStatus(prevStatus => ({
                 ...prevStatus,
                 isLoading: false,
@@ -249,7 +272,7 @@ function VostraButton({ config })
             chrome.storage.onChanged.addListener(handleAuthChange);
         } catch (e)
         {
-            console.warn("Vostra: Failed to add storage listener", e);
+            console.log("Vostra: Failed to add storage listener", e);
         }
 
         return () =>
@@ -267,6 +290,7 @@ function VostraButton({ config })
 
     const promptClicked = (prompt) =>
     {
+        logEvent("prompt_select", { prompt_id: prompt.id, prompt_title: prompt.title });
         setSelectedPrompt(prompt)
 
         let textDiv;
@@ -318,16 +342,16 @@ function VostraButton({ config })
                 ref={(el) => config.applyRef && config.applyRef(el)}
                 className={config.buttonClass}
                 style={config.style}
+                onClick={() => logEvent("vostra_menu_open")}
                 disabled={status.isLoading} >
 
                 {config.llm === "gemini" && <span className="mat-mdc-button-persistent-ripple mdc-button__ripple"></span>}
 
-                <svg width="22" height="22" viewBox="0 0 600 600" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <g mask="url(#mask0_33_152)">
-                        <path d="M448.689 460.745C410.475 498.158 349.651 497.962 311.659 459.858L310.604 458.797L355.42 412.639L356.477 413.7C369.985 427.247 391.739 427.103 405.069 413.375L487.546 328.431C500.873 314.703 500.727 292.593 487.22 279.045L403.626 195.203C390.118 181.655 368.361 181.8 355.034 195.526L272.557 280.472C259.665 293.749 259.381 314.866 271.599 328.495L226.762 374.673C190.061 336.475 189.496 275.644 225.376 236.769L227.133 234.914L309.611 149.968C347.692 110.75 409.847 110.336 448.442 149.045L532.036 232.887C570.631 271.596 571.048 334.77 532.97 373.987L450.49 458.934L448.689 460.745Z" fill="#065F46" />
-                        <path d="M137.914 143.212C176.128 105.799 236.953 105.995 274.945 144.099L279.222 148.389L234.403 194.547L230.127 190.257C216.619 176.709 194.864 176.853 181.536 190.58L99.0573 275.526C85.7295 289.253 85.8755 311.363 99.3839 324.912L182.978 408.754C196.486 422.301 218.241 422.157 231.569 408.429L314.046 323.485C327.376 309.758 327.23 287.647 313.72 274.099L313.021 273.397L357.839 227.239L358.539 227.941C396.531 266.045 397.529 327.856 361.227 367.187L359.47 369.041L276.993 453.988C238.912 493.207 176.755 493.621 138.161 454.912L54.5668 371.07C15.9719 332.361 15.5543 269.187 53.6341 229.968L136.112 145.022L137.914 143.212Z" fill="#44403C" />
-                    </g>
+                <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M16.4519 17.8645C15.0507 19.2363 12.8205 19.2291 11.4275 17.832L11.3888 17.7931L13.0321 16.1006L13.0708 16.1395C13.5661 16.6363 14.3638 16.631 14.8525 16.1276L17.8767 13.013C18.3653 12.5096 18.36 11.6989 17.8647 11.2022L14.7996 8.12797C14.3043 7.63121 13.5066 7.63653 13.0179 8.13982L9.99374 11.2545C9.52104 11.7413 9.51062 12.5156 9.95862 13.0153L8.31459 14.7085C6.96889 13.3079 6.94817 11.0775 8.26377 9.65206L8.3282 9.58404L11.3524 6.46936C12.7487 5.03136 15.0277 5.01618 16.4429 6.43551L19.508 9.50972C20.9231 10.929 20.9384 13.2454 19.5422 14.6834L16.518 17.7981L16.4519 17.8645Z" fill="#065F46" />
+                    <path d="M5.05721 6.22137C6.45839 4.84956 8.68864 4.85675 10.0817 6.25389L10.2385 6.41119L8.59514 8.10365L8.43835 7.94635C7.94306 7.44959 7.14538 7.45487 6.65668 7.9582L3.63246 11.0729C3.14378 11.5762 3.14913 12.3869 3.64444 12.8837L6.70956 15.9579C7.20485 16.4546 8.00253 16.4494 8.49123 15.946L11.5154 12.8314C12.0041 12.3281 11.9988 11.5173 11.5034 11.0206L11.4778 10.9948L13.1211 9.30236L13.1468 9.3281C14.5398 10.7252 14.5764 12.9916 13.2454 14.4338L13.1809 14.5018L10.1568 17.6165C8.76047 19.0545 6.48138 19.0697 5.06627 17.6504L2.00115 14.5762C0.586 13.1568 0.570688 10.8405 1.96695 9.40242L4.99114 6.28774L5.05721 6.22137Z" fill="#44403C" />
                 </svg>
+
 
                 <span className={config.textWrapperClass} style={config.textWrapperStyle}>
                     {
@@ -368,7 +392,7 @@ function VostraButton({ config })
                                 </div>
                             </a>
 
-                            <a onClick={(e) => { e.preventDefault(); fetchInstructionSets(true); }} title="Sync library" className={config.menuItemClass} style={{ padding: '0px', cursor: 'pointer', width: 'fit-content' }}>
+                            <a onClick={(e) => { e.preventDefault(); logEvent("sync_library"); fetchInstructionSets(true); }} title="Sync library" className={config.menuItemClass} style={{ padding: '0px', cursor: 'pointer', width: 'fit-content' }}>
                                 <span className={config.menuItemContentClass} style={{ padding: '0px !important', lineHeight: '0' }}>
                                     {config.menuIcons.reload()}
                                 </span>
@@ -382,7 +406,11 @@ function VostraButton({ config })
                                     type="text"
                                     placeholder="Search prompts..."
                                     value={searchTerm}
-                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    onChange={(e) =>
+                                    {
+                                        setSearchTerm(e.target.value);
+                                        if (e.target.value.length === 3) logEvent("search_prompts", { term: e.target.value });
+                                    }}
                                     onClick={(e) => e.stopPropagation()}
                                     onKeyDown={(e) => e.stopPropagation()}
                                     className={config.menuItemClass}
@@ -460,7 +488,7 @@ function VostraButton({ config })
 
                             {filteredTeams.map((team, teamIndex) => (
 
-                                <>
+                                <div key={teamIndex}>
                                     <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
                                         <span className={config.menuTitleClass} style={config.menuTitleStyle}>
                                             {team.name}
@@ -492,15 +520,15 @@ function VostraButton({ config })
                                     ))}
 
                                     {config.llm === "chatgpt" && (
-                                        <div role="separator" aria-orientation="horizontal" class="bg-token-border-default h-px mx-4 my-1"></div>
+                                        <div role="separator" aria-orientation="horizontal" className="bg-token-border-default h-px mx-4 my-1"></div>
                                     )}
 
 
                                     {config.llm === "gemini" && (
-                                        <hr className='mat-divider share-divider mat-divider-horizontal' />
+                                        <hr className='mat-divider share-divider mat-divider-horizontal opacity-50' />
                                     )}
 
-                                </>
+                                </div>
                             ))}
 
 
@@ -508,7 +536,7 @@ function VostraButton({ config })
 
 
                             <MenuItem>
-                                <a href={FRONTEND_URL} target='_blank' className={config.menuItemClass} data-has-submenu>
+                                <a href={FRONTEND_URL} target='_blank' onClick={() => logEvent("manage_prompts_click")} className={config.menuItemClass} data-has-submenu>
                                     {config.menuIcons.prompts()}
                                     <span className={config.menuItemContentClass}>
                                         Manage prompts
@@ -551,6 +579,7 @@ function VostraButton({ config })
 // Function to find the target element and render the React component
 function mountReactComponent(config)
 {
+    console.log("Vostra: Mounting React component for ", config.llm);
     const targetElement = document.querySelector(config.targetSelector);
 
     // Checks if there's no target or it already exists in the target
@@ -611,7 +640,7 @@ if (config)
         });
     } catch (e)
     {
-        console.warn("Vostra: Failed to start observer", e);
+        console.log("Vostra: Failed to start observer", e);
     }
 }
 else    
